@@ -121,6 +121,12 @@ deps:
 run: build
 	./$(BUILD_DIR)/$(BINARY_NAME)
 
+# Personal note: use 'make test-short' during local dev to skip slow integration tests
+## test-short: Run unit tests without race detector (faster for local iteration)
+.PHONY: test-short
+test-short:
+	$(GOTEST) -short -coverprofile=coverage.out ./...
+
 ## help: Display this help message
 .PHONY: help
 help:
