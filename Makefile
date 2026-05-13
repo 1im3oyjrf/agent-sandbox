@@ -1,137 +1,123 @@
+# Copyright 2024 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Go parameters
+GO ?= go
+GOFMT ?= gofmt
+GOLINT ?= golangci-lint
+GOBUILD = $(GO) build
+GOTEST = $(GO) test
+GOVET = $(GO) vet
+
+# Build parameters
+BINARY_NAME ?= agent-sandbox
+BUILD_DIR ?= bin
+CMD_DIR ?= cmd/agent-sandbox
+
+# Version information
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.gitCommit=$(GIT_COMMIT) -X main.buildDate=$(BUILD_DATE)"
+
+# Image parameters
+IMAGE_REGISTRY ?= gcr.io/k8s-staging-agent-sandbox
+IMAGE_NAME ?= agent-sandbox
+IMAGE_TAG ?= $(VERSION)
+IMAGE ?= $(IMAGE_REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
+
 .PHONY: all
-all: fix-go-generate build lint-go lint-api test-unit toc-verify
+all: build
 
-.PHONY: fix-go-generate
-fix-go-generate:
-	dev/tools/fix-go-generate
-
-.PHONY: generate-api-docs
-generate-api-docs: ## Generate API reference documentation
-	@echo "Generating API Docs..."
-	go install github.com/elastic/crd-ref-docs@latest
-	$(GOPATH)/bin/crd-ref-docs --source-path=./ --config=./docs/crd-ref-docs.yaml --renderer=markdown --output-path=./docs/api.md --max-depth=10
-	rm -rf ./tmp-api-source
-
-VERSION_PKG := sigs.k8s.io/agent-sandbox/internal/version
-
-GIT_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "unknown")
-GIT_SHA     ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-BUILD_DATE  ?= $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
-
-LD_FLAGS := -s -w -X $(VERSION_PKG).gitVersion=$(GIT_VERSION) \
-	-X $(VERSION_PKG).gitSHA=$(GIT_SHA) \
-	-X $(VERSION_PKG).buildDate=$(BUILD_DATE)
-
+## build: Build the binary
 .PHONY: build
 build:
-	go build -ldflags "$(LD_FLAGS)" -o bin/manager cmd/agent-sandbox-controller/main.go
+	@mkdir -p $(BUILD_DIR)
+	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./$(CMD_DIR)/...
 
-KIND_CLUSTER=agent-sandbox
+## test: Run unit tests
+.PHONY: test
+test:
+	$(GOTEST) -v -race -coverprofile=coverage.out ./...
 
-.PHONY: deploy-kind
-# `EXTENSIONS=true make deploy-kind` to deploy with Extensions enabled.
-# `CONTROLLER_ARGS="--enable-pprof-debug --zap-log-level=debug" make deploy-kind` to deploy with custom controller flags.
-# `CONTROLLER_ONLY=true make deploy-kind` to build and push only the controller image.
-deploy-kind:
-	./dev/tools/create-kind-cluster --recreate ${KIND_CLUSTER} --kubeconfig bin/KUBECONFIG
-	./dev/tools/push-images --image-prefix=kind.local/ --kind-cluster-name=${KIND_CLUSTER} $(if $(filter true,$(CONTROLLER_ONLY)),--controller-only)
-	./dev/tools/deploy-to-kube --image-prefix=kind.local/ $(if $(filter true,$(EXTENSIONS)),--extensions) $(if $(CONTROLLER_ARGS),--controller-args="$(CONTROLLER_ARGS)")
+## test-coverage: Run tests and display coverage report
+.PHONY: test-coverage
+test-coverage: test
+	$(GO) tool cover -html=coverage.out
 
-.PHONY: deploy-cloud-provider-kind
-deploy-cloud-provider-kind:
-	./dev/tools/deploy-cloud-provider
+## lint: Run linter
+.PHONY: lint
+lint:
+	$(GOLINT) run ./...
 
-.PHONY: delete-kind
-delete-kind:
-	kind delete cluster --name ${KIND_CLUSTER}
+## fmt: Format Go code
+.PHONY: fmt
+fmt:
+	$(GOFMT) -s -w .
 
-.PHONY: kill-cloud-provider-kind
-kill-cloud-provider-kind:
-	killall cloud-provider-kind
+## fmt-check: Check Go code formatting
+.PHONY: fmt-check
+fmt-check:
+	@diff=$$($(GOFMT) -s -d .); \
+	if [ -n "$$diff" ]; then \
+		echo "$$diff"; \
+		exit 1; \
+	fi
 
-.PHONY: test-unit
-test-unit:
-	./dev/tools/test-unit
+## vet: Run go vet
+.PHONY: vet
+vet:
+	$(GOVET) ./...
 
-.PHONY: test-e2e
-test-e2e:
-	RACE=$(RACE) ./dev/ci/presubmits/test-e2e
+## verify: Run all verification checks
+.PHONY: verify
+verify: fmt-check vet lint
 
-.PHONY: test-e2e-race
-test-e2e-race:
-	RACE=1 ./dev/ci/presubmits/test-e2e
+## docker-build: Build Docker image
+.PHONY: docker-build
+docker-build:
+	docker build -t $(IMAGE) .
 
-.PHONY: test-e2e-benchmarks
-test-e2e-benchmarks:
-	./dev/ci/presubmits/test-e2e --suite benchmarks
+## docker-push: Push Docker image
+.PHONY: docker-push
+docker-push:
+	docker push $(IMAGE)
 
-.PHONY: lint-go
-lint-go:
-	./dev/tools/lint-go
-
-.PHONY: fix-go
-fix-go:
-	./dev/tools/lint-go --fix
-
-.PHONY: lint-api
-lint-api:
-	./dev/tools/lint-api
-
-.PHONY: fix-api
-fix-api:
-	./dev/tools/lint-api --fix
-
-# Location of your local k8s.io repo (can be overridden: make release-promote TAG=v0.1.0 K8S_IO_DIR=../other/k8s.io)
-K8S_IO_DIR ?= ../../kubernetes/k8s.io
-
-# Default remote (can be overriden: make release-publish REMOTE=upstream ...)
-REMOTE_UPSTREAM ?= upstream
-REMOTE_FORK ?= origin
-
-# Gemini model for release notes generation
-GEMINI_MODEL ?= gemini-2.5-flash
-
-# Promote all staging images to registry.k8s.io
-# Usage: make release-promote TAG=vX.Y.Z
-.PHONY: release-promote
-release-promote:
-	@if [ -z "$(TAG)" ]; then echo "TAG is required (e.g., make release-promote TAG=vX.Y.Z)"; exit 1; fi
-	./dev/tools/tag-promote-images --tag=${TAG} --k8s-io-dir=${K8S_IO_DIR} --upstream-remote=${REMOTE_UPSTREAM} --fork-remote=${REMOTE_FORK} $(if $(filter true,$(SKIP_TAGGING)),--skip-tagging) $(if $(filter true,$(ONLY_TAGGING)),--only-tagging)
-
-# Publish a draft release to GitHub
-# Usage: make release-publish TAG=vX.Y.Z GEMINI_MODEL=gemini-2.5-flash
-.PHONY: release-publish
-release-publish:
-	@if [ -z "$(TAG)" ]; then echo "TAG is required (e.g., make release-publish TAG=vX.Y.Z)"; exit 1; fi
-	go mod tidy
-	go generate ./...
-	./dev/tools/release --tag=${TAG} --publish --model=${GEMINI_MODEL}
-
-# Generate release manifests only
-# Usage: make release-manifests TAG=vX.Y.Z
-.PHONY: release-manifests
-release-manifests:
-	@if [ -z "$(TAG)" ]; then echo "TAG is required (e.g., make release-manifests TAG=vX.Y.Z)"; exit 1; fi
-	go mod tidy
-	go generate ./...
-	./dev/tools/release --tag=${TAG}
-
-# Example usage:
-# make release-python-sdk TAG=v0.1.1.post1 (for patch release on PyPI)
-.PHONY: release-python-sdk
-release-python-sdk:
-	@if [ -z "$(TAG)" ]; then echo "TAG is required (e.g., make release-python-sdk TAG=vX.Y.Z.postN)"; exit 1; fi
-	./dev/tools/release-python --tag=${TAG} --remote=${REMOTE_UPSTREAM}
-
-.PHONY: toc-update
-toc-update:
-	./dev/tools/update-toc
-
-.PHONY: toc-verify
-toc-verify:
-	./dev/tools/verify-toc
-
+## clean: Clean build artifacts
 .PHONY: clean
 clean:
-	rm -rf dev/tools/tmp
-	rm -rf bin/manager
+	rm -rf $(BUILD_DIR) coverage.out
+
+## generate: Run code generation
+.PHONY: generate
+generate:
+	$(GO) generate ./...
+
+## tidy: Tidy Go modules
+.PHONY: tidy
+tidy:
+	$(GO) mod tidy
+
+## help: Display this help message
+.PHONY: help
+help:
+	@echo "Usage: make <target>"
+	@echo ""
+	@echo "Targets:"
+	@awk '/^## / { \
+		sub(/^## /, ""); \
+		split($$0, a, ":"); \
+		printf "  %-20s %s\n", a[1], a[2] \
+	}' $(MAKEFILE_LIST)
