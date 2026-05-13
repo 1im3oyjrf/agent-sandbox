@@ -110,6 +110,12 @@ generate:
 tidy:
 	$(GO) mod tidy
 
+## deps: Download and verify dependencies
+.PHONY: deps
+deps:
+	$(GO) mod download
+	$(GO) mod verify
+
 ## help: Display this help message
 .PHONY: help
 help:
