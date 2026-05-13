@@ -116,6 +116,11 @@ deps:
 	$(GO) mod download
 	$(GO) mod verify
 
+## run: Build and run the binary locally
+.PHONY: run
+run: build
+	./$(BUILD_DIR)/$(BINARY_NAME)
+
 ## help: Display this help message
 .PHONY: help
 help:
